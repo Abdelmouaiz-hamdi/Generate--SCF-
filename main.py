@@ -3,7 +3,7 @@ from tkinter import filedialog, ttk, messagebox
 import pandas as pd
 import re  # regex
 from lxml import etree as ET  # assure-toi que lxml est bien installé
-
+import os
 
 
 class SCFReplacementApp:
@@ -12,6 +12,7 @@ class SCFReplacementApp:
         self.root.title("🔧 Comparateur et Remplacement XML SCF Nokia")
         self.df = None
         self.xml_content = ""
+
         self.replacements = []
 
         self.excel_path = tk.StringVar()
@@ -72,14 +73,18 @@ class SCFReplacementApp:
             self.df = pd.read_excel(file_path, header=2)
             self.df.columns = self.df.columns.str.strip().str.replace('\xa0', '', regex=False)
 
-            possible_site_cols = [c for c in self.df.columns if "site" in c.lower()]
-            if not possible_site_cols:
-                raise ValueError("Aucune colonne de site détectée (contenant 'site') dans le fichier Excel.")
+            # On récupère la colonne enbName (3e colonne ou en la cherchant)
+            enb_col = self.df.columns[2]
+            if enb_col.lower() != "enbname":
+                cols_lower = [c.lower() for c in self.df.columns]
+                if "enbname" in cols_lower:
+                    enb_col = self.df.columns[cols_lower.index("enbname")]
+                else:
+                    raise ValueError("Colonne 'enbName' non trouvée dans le fichier Excel.")
 
-            site_col = possible_site_cols[0]
-            self.df[site_col] = self.df[site_col].astype(str)
-            self.site_column = site_col
-            self.all_sites = self.df[site_col].dropna().tolist()
+            self.df[enb_col] = self.df[enb_col].astype(str)
+            self.site_column = enb_col
+            self.all_sites = self.df[enb_col].dropna().tolist()
             self.old_site_cb['values'] = self.all_sites
             self.new_site_cb['values'] = self.all_sites
             messagebox.showinfo("Succès", "Fichier Excel chargé avec succès.")
@@ -93,6 +98,7 @@ class SCFReplacementApp:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 self.xml_content = f.read()
+            self.last_xml_path = path  # <-- Ajoute cette ligne dans ta fonction
             messagebox.showinfo("Succès", "Fichier XML chargé.")
         except Exception as e:
             messagebox.showerror("Erreur", f"Erreur lecture XML :\n{e}")
@@ -150,6 +156,15 @@ class SCFReplacementApp:
                             found_in_xml = "✅"
                             self.replacements.append((old_pattern, new_pattern))
 
+                        pattern_list = re.compile(r'<list name="wncelIdList">(.*?)</list>', re.DOTALL)
+                        match_list = pattern_list.search(self.xml_content)
+                        if match_list:
+                            list_content = match_list.group(1)
+                            old_p = f'<p>{val_old}</p>'
+                            new_p = f'<p>{val_new}</p>'
+                            if old_p in list_content:
+                                found_in_xml = "✅"
+                                self.replacements.append((old_p, new_p))
                     else:
                         patterns = [
                             (f'<p name="{tag}">{val_old}</p>', f'<p name="{tag}">{val_new}</p>'),
@@ -190,9 +205,8 @@ class SCFReplacementApp:
                 old, new = item
                 modified_xml = self.safe_replace(modified_xml, old, new)
 
-        save_path = filedialog.asksaveasfilename(defaultextension=".xml", filetypes=[("Fichiers XML", "*.xml")])
-        if not save_path:
-            return
+        base, ext = os.path.splitext(self.last_xml_path)
+        save_path = f"{base}_modifié{ext}"
 
         try:
             with open(save_path, "w", encoding="utf-8") as f:
@@ -206,11 +220,10 @@ class SCFReplacementApp:
             filename = filedialog.askopenfilename(filetypes=[("Fichiers XML", "*.xml")])
             if filename:
                 input_var.set(filename)
-
-        def browse_output():
-            filename = filedialog.asksaveasfilename(defaultextension=".xml", filetypes=[("Fichiers XML", "*.xml")])
-            if filename:
-                output_var.set(filename)
+                # Générer automatiquement le nom du fichier de sortie
+                base, ext = os.path.splitext(filename)
+                auto_output = f"{base}_nettoyé{ext}"
+                output_var.set(auto_output)
 
         def remove_classes_from_xml():
             input_file = input_var.get()
@@ -234,11 +247,11 @@ class SCFReplacementApp:
                             parent.remove(mo)
 
                 tree.write(output_file, encoding='UTF-8', xml_declaration=True, pretty_print=True)
-                messagebox.showinfo("Succès", "Nettoyage terminé. Le nouveau fichier XML est prêt.")
+                messagebox.showinfo("Succès", f"Nettoyage terminé.\nFichier sauvegardé :\n{output_file}")
             except Exception as e:
                 messagebox.showerror("Erreur", f"Erreur pendant le traitement :\n{e}")
 
-        # Nouvelle fenêtre
+        # --- Fenêtre secondaire ---
         window = tk.Toplevel(self.root)
         window.title("🧹 Nettoyage XML : Suppression de classes")
 
@@ -250,18 +263,16 @@ class SCFReplacementApp:
         tk.Entry(window, textvariable=input_var, width=50).grid(row=0, column=1, padx=5)
         tk.Button(window, text="Parcourir", command=browse_input).grid(row=0, column=2, padx=5)
 
-        tk.Label(window, text="Fichier XML de sortie :").grid(row=1, column=0, sticky="e", padx=5, pady=5)
-        tk.Entry(window, textvariable=output_var, width=50).grid(row=1, column=1, padx=5)
-        tk.Button(window, text="Parcourir", command=browse_output).grid(row=1, column=2, padx=5)
+        tk.Label(window, text="Fichier XML de sortie (auto) :").grid(row=1, column=0, sticky="e", padx=5, pady=5)
+        tk.Entry(window, textvariable=output_var, width=50, state='readonly').grid(row=1, column=1, padx=5)
+        # Plus besoin du bouton "Parcourir" pour output
 
         tk.Label(window, text="Classes à supprimer (séparées par des virgules) :").grid(row=2, column=0, columnspan=3,
                                                                                         sticky="w", padx=5)
         tk.Entry(window, textvariable=classes_var, width=70).grid(row=3, column=0, columnspan=3, padx=5, pady=5)
-        classes_var.set("LNADJU, LNREL, LNAJDW")  # valeur par défaut
-
-        tk.Button(window, text="Supprimer les classes", command=remove_classes_from_xml, bg="red", fg="white").grid(
-            row=4, column=1, pady=10)
-
+        classes_var.set("LNADJ, LNREL, LNADJW, LNRELW, LNRELG, LNADJL, LNADJG, ALD, RETU")  # valeur par défaut
+        tk.Button(window, text="Supprimer les classes", command=remove_classes_from_xml,
+                  bg="red", fg="white").grid(row=4, column=1, pady=10)
 
 
 if __name__ == "__main__":
